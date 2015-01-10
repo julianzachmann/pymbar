@@ -1418,6 +1418,87 @@ class MBAR:
 
         return np.linalg.pinv(A, rcond=tol)
 
+    #=====================================================================
+
+    def computePMF_kldiverge(self, x_n, fitform = 'spline', nformfit = 10, uncertainties='from-lowest', pmf_reference=None):
+        """Compute the free energy of occupying a number of bins.
+
+        This implementation computes the expectation of an indicator-function observable for each bin.
+
+        Parameters
+        ----------
+        u_n : np.ndarray, float, shape=(N)
+            u_n[n] is the reduced potential energy of snapshot n of state k for which the PMF is to be computed.
+        fitform: string, 
+             either 'spline' or 'periodic'
+        nformfit: int 
+             number of fitting functions.
+       """
+
+        from scipy.interpolate import interp1d
+        from scipy.integrate import quad
+        from scipy.optimize import minimize
+
+
+        # Compute unnormalized log weights for the given reduced potential
+        # u_kn.
+        log_w_n = mbar._computeUnnormalizedLogWeights(u_n)
+        w_n = numpy.exp(log_w_n)
+        w_n = w_n/numpy.sum(w_n)
+  
+        # compute KL divergence to the empirical distribution for the trial distribution F
+
+        # define functions that can change each iteration
+
+        if method == 'spline':
+            xstart = numpy.linspace(x_min,x_max,nspline)
+            def trialf(t):
+                return interp1d(xstart, t, kind='quadratic')
+            tstart = 0*xstart
+            for i in range(nspline): 
+                tstart[i] = f_i[numpy.argmin(numpy.abs(bin_center_i-xstart[i]))]  # start with nearest PMF value
+
+        if method == 'periodic':
+            # vary the magnitude, phase, and period
+            nperiod = nformfit
+            def trialf(t):
+                def interperiod(x):
+                    y = numpy.zeros(numpy.size(x))
+                    for i in range(nperiod):
+                        t[i+2*nperiod] = t[i+2*nperiod]%(360.0) # recenter the offsets, all in range
+                        y += t[i]*numpy.cos(t[i+nperiod]*x+t[i+2*nperiod])
+                    return y    
+                return interperiod
+            
+            tstart = numpy.zeros(3*nperiod)
+            # initial values of amplitudes, period, and phase
+            tstart[0:nperiod] = 0
+            d = (x_max - x_min)/(nperiod+1)
+            tstart[nperiod:2*nperiod] = (2*numpy.pi/(x_max-x_min))
+            tstart[2*nperiod:3*nperiod] = numpy.linspace(x_min+d/2,x_max-d/2,nperiod)
+
+    def kldiverge(t, ft, x_n, w_n, range, verbose = False):
+
+        # define the function f based on the current parameters t
+        f = ft(t) 
+        # define the exponential of f based on the current parameters t
+        expf = lambda x: numpy.exp(-f(x))
+        pE = numpy.dot(w_n,f(x_n))
+        pF = numpy.log(quad(expf,range[0],range[1])[0])  #0 is the value of quad
+        kl = pE + pF 
+        if verbose:
+            print kl, t, pE, pF
+        return kl
+
+        # inputs to minimize are:
+        # the function that we are to minimize
+        # the x values we have samples at
+        # the weights at the samples
+        # the domain of the function
+
+    result = minimize(kldiverge,tstart, args = (trialf, x_n, w_n, [chi_min,chi_max]))
+    pmf_final = trialf(result.x)
+      
     #=========================================================================
 
     def _zerosamestates(self, A):

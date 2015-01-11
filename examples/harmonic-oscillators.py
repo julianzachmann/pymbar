@@ -724,7 +724,20 @@ for i in range(1,nbins):
    print '%8d %6.2f %8d %10.3f %10.3f %10.3f %10.3f %8.2f' % (i, bin_centers[i,0], bin_counts[i], f_i[i], pmf_analytical[i], error, df_i[i], stdevs)
 
 print "============================================"
-print "      Test 2: 2D PMF   "
+print "      Test 2: 2D PMF using cubic spline  "
+print "============================================"
+
+# Compute PMF.                                
+print "Computing PMF ... (using initialized MBAR from Test 1)"
+pmf = mbar.computePMF_kldivergence(u_n, x_n, fitform = 'cubic', nform = 10, xrange = [numpy.min(x_n), numpy.max(x_n)], init=[bin_centers[1:,0],f_i[1:]])
+pmf_zero = pmf(bin_centers[zeroindex])
+print "%6s %10s %10s %10s" % ('x', 'f', 'true','error')
+for i in range(1,nbins):
+  error = pmf_analytical[i]-(pmf(bin_centers[i,0])-pmf_zero)
+  print '%6.2f %10.3f %10.3f %10.3f' % (bin_centers[i,0], pmf(bin_centers[i,0])-pmf_zero, pmf_analytical[i], error)
+
+print "============================================"
+print "      Test 3: 2D PMF   "
 print "============================================"
 
 xrange = [[-3,3],[-3,3]]

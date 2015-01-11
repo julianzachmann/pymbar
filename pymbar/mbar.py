@@ -1420,18 +1420,16 @@ class MBAR:
 
     #=====================================================================
 
-    def computePMF_kldiverge(self, x_n, fitform = 'spline', nformfit = 10, uncertainties='from-lowest', pmf_reference=None):
-        """Compute the free energy of occupying a number of bins.
-
-        This implementation computes the expectation of an indicator-function observable for each bin.
+    def computePMF_kldivergence(self, u_n, x_n, fitform = 'cubic', nform = 10, xrange = [0,1], init=None, verbose=False):
+        """Compute the PMF as the function minimizing KL divergence from a the empirical function
 
         Parameters
         ----------
         u_n : np.ndarray, float, shape=(N)
             u_n[n] is the reduced potential energy of snapshot n of state k for which the PMF is to be computed.
-        fitform: string, 
-             either 'spline' or 'periodic'
-        nformfit: int 
+        fitform: string 
+             either 'cubic', 'quadratic', 'linear' or 'periodic'
+        nform: int 
              number of fitting functions.
        """
 
@@ -1439,56 +1437,60 @@ class MBAR:
         from scipy.integrate import quad
         from scipy.optimize import minimize
 
-
         # Compute unnormalized log weights for the given reduced potential
         # u_kn.
-        log_w_n = mbar._computeUnnormalizedLogWeights(u_n)
-        w_n = numpy.exp(log_w_n)
-        w_n = w_n/numpy.sum(w_n)
+        log_w_n = self._computeUnnormalizedLogWeights(u_n)
+        w_n = np.exp(log_w_n)
+        w_n = w_n/np.sum(w_n)
   
         # compute KL divergence to the empirical distribution for the trial distribution F
 
         # define functions that can change each iteration
 
-        if method == 'spline':
-            xstart = numpy.linspace(x_min,x_max,nspline)
+        if fitform in ['cubic', 'quadratic', 'linear']:
+            nspline = nform
+            xstart = np.linspace(xrange[0], xrange[1], nspline)
+            # can we improve the optimization normalizing the function?
             def trialf(t):
-                return interp1d(xstart, t, kind='quadratic')
+                return interp1d(xstart, t, kind=fitform)
             tstart = 0*xstart
-            for i in range(nspline): 
-                tstart[i] = f_i[numpy.argmin(numpy.abs(bin_center_i-xstart[i]))]  # start with nearest PMF value
+            if init:
+                for i in range(nspline): 
+                    tstart[i] = init[1][np.argmin(np.abs(init[0]-xstart[i]))]  # start with nearest PMF value
 
-        if method == 'periodic':
+        elif fitform == 'periodic':
             # vary the magnitude, phase, and period
-            nperiod = nformfit
+            nperiod = nform
             def trialf(t):
                 def interperiod(x):
-                    y = numpy.zeros(numpy.size(x))
+                    y = np.zeros(np.size(x))
                     for i in range(nperiod):
                         t[i+2*nperiod] = t[i+2*nperiod]%(360.0) # recenter the offsets, all in range
-                        y += t[i]*numpy.cos(t[i+nperiod]*x+t[i+2*nperiod])
+                        y += t[i]*np.cos(t[i+nperiod]*x+t[i+2*nperiod])
                     return y    
                 return interperiod
             
-            tstart = numpy.zeros(3*nperiod)
+            tstart = np.zeros(3*nperiod)
             # initial values of amplitudes, period, and phase
             tstart[0:nperiod] = 0
-            d = (x_max - x_min)/(nperiod+1)
-            tstart[nperiod:2*nperiod] = (2*numpy.pi/(x_max-x_min))
-            tstart[2*nperiod:3*nperiod] = numpy.linspace(x_min+d/2,x_max-d/2,nperiod)
+            d = (xrange[1] - xrange[0])/(nperiod+1)
+            tstart[nperiod:2*nperiod] = (2*np.pi/(xrange[1]-xrange[0]))
+            tstart[2*nperiod:3*nperiod] = np.linspace(xrange[0]+d/2,xrange[1]-d/2,nperiod)
+        else:
+            print('fitform not defined!')
 
-    def kldiverge(t, ft, x_n, w_n, range, verbose = False):
+        def kldiverge(t, ft, x_n, w_n, range, verbose):
 
-        # define the function f based on the current parameters t
-        f = ft(t) 
-        # define the exponential of f based on the current parameters t
-        expf = lambda x: numpy.exp(-f(x))
-        pE = numpy.dot(w_n,f(x_n))
-        pF = numpy.log(quad(expf,range[0],range[1])[0])  #0 is the value of quad
-        kl = pE + pF 
-        if verbose:
-            print kl, t, pE, pF
-        return kl
+            # define the function f based on the current parameters t
+            f = ft(t) 
+            # define the exponential of f based on the current parameters t
+            expf = lambda x: np.exp(-f(x))
+            pE = np.dot(w_n,f(x_n))
+            pF = np.log(quad(expf,range[0],range[1])[0])  #0 is the value of quad
+            kl = pE + pF 
+            if verbose:
+                print kl, t, pE, pF
+            return kl
 
         # inputs to minimize are:
         # the function that we are to minimize
@@ -1496,9 +1498,11 @@ class MBAR:
         # the weights at the samples
         # the domain of the function
 
-    result = minimize(kldiverge,tstart, args = (trialf, x_n, w_n, [chi_min,chi_max]))
-    pmf_final = trialf(result.x)
-      
+        result = minimize(kldiverge, tstart, args = (trialf, x_n, w_n, xrange, verbose))
+        pmf_final = trialf(result.x)
+
+        return pmf_final
+
     #=========================================================================
 
     def _zerosamestates(self, A):

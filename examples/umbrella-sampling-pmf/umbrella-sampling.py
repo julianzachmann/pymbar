@@ -156,20 +156,23 @@ for i in range(nbins):
 
 ################
 # Now compute PMF assuming a cubic spline
-import cProfile, pstats, StringIO
-from scipy.interpolate import splrep, splev, splint
-from scipy.integrate import quad
+from scipy.interpolate import splrep, splev, splint, interp1d
+from scipy.integrate import romb
 from scipy.optimize import minimize
 
-pr = cProfile.Profile()
-pr.enable()
+#import cProfile, pstats, StringIO
+#pr = cProfile.Profile()
+#pr.enable()
 
 smoother = 'spline'
-method = 'sumkldiverge'
 #method = 'kldiverge'
-#method = 'vFEP'
-nspline = 14
-verbose = True
+#method = 'sumkldiverge'
+method = 'vFEP'
+nspline = 100
+nrom = 2**(numpy.ceil(numpy.log(nspline)/numpy.log(2))+2)+1  # at least 4 per spline
+intvals = numpy.linspace(chi_min,chi_max,nrom)
+
+verbose = False
 #smoother = 'periodic'
 #nperiod = 8
 
@@ -185,82 +188,56 @@ def fbias(k,x):
     dchi = i*(360.0 - numpy.fabs(dchi)) + (1-i)*dchi
     return beta_k[k] * (K_k[k]/2.0) * dchi**2
 
-fbiases = []
-for k in range(K):
-    fbiases.append(lambda x: fbias(k,x))
-
 # define functions that can change each iteration
 if smoother == 'spline':
     xstart = numpy.linspace(chi_min,chi_max,nspline)
     def trialf(t):
-        return interp1d(xstart, t, kind='cubic')
+        return splrep(xstart, t, xb=chi_min, xe=chi_max, k=3)
     tstart = 0*xstart
-    #for i in range(nspline): 
-    #    tstart[i] = f_i[numpy.argmin(numpy.abs(bin_center_i-xstart[i]))]  # start with nearest PMF value
 
-if smoother == 'periodic':
-    # vary the magnitude, phase, and period
-    def trialf(t):
-        def interperiod(x):
-            y = numpy.zeros(numpy.size(x))
-            for i in range(nperiod):
-                t[i+2*nperiod] = t[i+2*nperiod]%(360.0) # recenter the offsets, all in range
-                y += t[i]*numpy.cos(t[i+nperiod]*x+t[i+2*nperiod])
-            return y    
-        return interperiod
-
-    tstart = numpy.zeros(3*nperiod)
-    # initial values of ampliudes, period, and phase
-    tstart[0:nperiod] = 0
-    d = (chi_max - chi_min)/(nperiod+1)
-    tstart[nperiod:2*nperiod] = (2*numpy.pi/(chi_max-chi_min))
-    tstart[2*nperiod:3*nperiod] = numpy.linspace(chi_min+d/2,chi_max-d/2,nperiod)
-    
-def kldiverge(t,ft,x_n,w_n,xrange):
+def kldiverge(t,ft,x_n,w_n):
 
     # define the function f based on the current parameters t
-    #t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
-    feval = ft(t)
+    t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
+    tck = ft(t)
     # define the exponential of f based on the current parameters t
-    expf = lambda x: numpy.exp(-f(x))
-    pE = numpy.dot(w_n,f(x_n))
-    pF = numpy.log(quad(expf,xrange[0],xrange[1])[0])  #0 is the value of quad
+    pE = numpy.dot(w_n,splev(x_n,tck))
+    expf = numpy.exp(-splev(intvals,tck))
+    pF = numpy.log(romb(expf,1.0/(nrom-1)))  #0 is the value of the first axis
     kl = pE + pF 
-    print kl, t, pE, pF
+    if verbose:
+        print kl, t
     return kl
 
-def sumkldiverge(t,ft,x_n,K,w_kn,fbias,xrange):
+def sumkldiverge(t,ft,x_n,K,w_kn):
     t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
-    feval = ft(t)  # the current value of the PMF
-    fx = feval(x_n)  # only need to evaluate this over all points outside(?)      
+    tck = ft(t)  # the current value of the PMF
+    fx = splev(x_n,tck)  # only need to evaluate this over all points outside(?)      
     kl = 0
-    # figure out the bias
     for k in range(K):
-        # what is the biasing function for this state
         bias = lambda x: fbias(k,x)
-        # define the exponential of f based on the current parameters t.
-        expf = lambda x: numpy.exp(-feval(x)-bias(x))
-        pE = numpy.dot(w_kn[:,k],fx+bias(x_n))
-        pF = numpy.log(quad(expf,xrange[0],xrange[1])[0])  #0 is the value of quad
+        #pE = numpy.dot(w_kn[:,k],fx+bias(x_n)) #We don't actually need the bias part, it doesn't change with lambda
+        pE = numpy.dot(w_kn[:,k],fx)
+        expf = numpy.exp(-splev(intvals,tck)-bias(intvals))
+        pF = numpy.log(romb(expf,1.0/(nrom-1)))
         kl += (pE + pF)
     if verbose:
         print kl,t
     return kl
 
-def vFEP(t,ft,x_kn,K,N_k,fbias,xrange):
+def vFEP(t,ft,x_kn,K,N_k):
     t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
-    feval = ft(t)  # the current value of the PMF
+    tck = ft(t)  # the current value of the PMF
     kl = 0
     # figure out the bias
     for k in range(K):
         x_n = x_kn[k,0:N_k[k]]
-        fx = feval(x_n)  # only need to evaluate this over all points outside(?)
-        # what is the biasing function for this state
+        fx = splev(x_n,tck)  # only need to evaluate this over the points from a single bin.
         bias = lambda x: fbias(k,x)
-        # define the exponential of f based on the current parameters t.
-        expf = lambda x: numpy.exp(-feval(x)-bias(x))
-        pE = numpy.sum(fx+bias(x_n))/N_k[k]
-        pF = numpy.log(quad(expf,xrange[0],xrange[1])[0])  #0 is the value of quad
+        #pE = numpy.sum(fx+bias(x_n))/N_k[k] # we don't need the bias, it is not affected.
+        pE = numpy.sum(fx)/N_k[k]
+        expf = numpy.exp(-splev(intvals,tck)-bias(intvals))
+        pF = numpy.log(romb(expf,1.0/(nrom-1)))
         kl += (pE + pF)
     if verbose:
         print kl,t
@@ -281,9 +258,9 @@ if method == 'sumkldiverge':
     # the umbrella restraints centers
     # the domain of the function  
 
-    result = minimize(sumkldiverge,tstart,args=(trialf,chi_n,K,w_kn,fbias,[chi_min,chi_max]),options=options)
-    pmf_final = trialf(result.x)
-
+    result = minimize(sumkldiverge,tstart,args=(trialf,chi_n,K,w_kn),options=options)
+    pmf_final = lambda x: splev(x,trialf(result.x))
+    
 elif method == 'kldiverge':
 
     # inputs to minimize are:
@@ -293,23 +270,24 @@ elif method == 'kldiverge':
     # the domain of the function
 
     # Compute unnormalized log weights for the given reduced potential u_kn.
-    log_w_n = mbar._computeUnnormalizedLogWeights(pymbar.utils.kn_to_n(u_kn, N_k = mbar.N_k),options=options)
+    log_w_n = mbar._computeUnnormalizedLogWeights(pymbar.utils.kn_to_n(u_kn, N_k = mbar.N_k))
     w_n = numpy.exp(log_w_n)
     w_n = w_n/numpy.sum(w_n)
 
-    result = minimize(kldiverge,tstart,args=(trialf,chi_n,w_n,[chi_min,chi_max]),options=options)
-    pmf_final = trialf(result.x)
+    result = minimize(kldiverge,tstart,args=(trialf,chi_n,w_n),options=options)
+    pmf_final = lambda x: splev(x,trialf(result.x))
 
 elif method == 'vFEP':
-    result = minimize(vFEP,tstart,args=(trialf,chi_kn,K,mbar.N_k,fbias,[chi_min,chi_max]),options=options)
-    pmf_final = trialf(result.x)
 
-pr.disable()
-s = StringIO.StringIO()
-sortby = 'cumulative'
-ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-ps.print_stats()
-print s.getvalue()
+    result = minimize(vFEP,tstart,args=(trialf,chi_kn,K,mbar.N_k),options=options)
+    pmf_final = lambda x: splev(x,trialf(result.x))
+
+#pr.disable()
+#s = StringIO.StringIO()
+#sortby = 'cumulative'
+#ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+#ps.print_stats()
+#print s.getvalue()
 
 nplot = 1000
 import matplotlib.pyplot as plt

@@ -159,22 +159,18 @@ for i in range(nbins):
 from scipy.interpolate import splrep, splev, splint, interp1d
 from scipy.integrate import romb
 from scipy.optimize import minimize
+import pdb
 
 #import cProfile, pstats, StringIO
 #pr = cProfile.Profile()
 #pr.enable()
 
 smoother = 'spline'
-#method = 'kldiverge'
-#method = 'sumkldiverge'
-method = 'vFEP'
 nspline = 100
 nrom = 2**(numpy.ceil(numpy.log(nspline)/numpy.log(2))+2)+1  # at least 4 per spline
 intvals = numpy.linspace(chi_min,chi_max,nrom)
 
 verbose = False
-#smoother = 'periodic'
-#nperiod = 8
 
 # compute KL divergence to the empirical distribution for the trial distribution F
 # convert angles to a single array.
@@ -195,7 +191,7 @@ if smoother == 'spline':
         return splrep(xstart, t, xb=chi_min, xe=chi_max, k=3)
     tstart = 0*xstart
 
-def kldiverge(t,ft,x_n,w_n):
+def kl(t,ft,x_n,w_n):
 
     # define the function f based on the current parameters t
     t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
@@ -209,18 +205,18 @@ def kldiverge(t,ft,x_n,w_n):
         print kl, t
     return kl
 
-def sumkldiverge(t,ft,x_n,K,w_kn):
+def sumkl(t,ft,x_n,K,w_kn):
     t -= t[0] # set a reference state, may make the minization faster by removing degenerate solutions
     tck = ft(t)  # the current value of the PMF
     fx = splev(x_n,tck)  # only need to evaluate this over all points outside(?)      
-    kl = 0
+    w_n = numpy.sum(w_kn,axis=1)
+    kl = numpy.dot(w_n,fx)
+    spvals = splev(intvals,tck)
     for k in range(K):
         bias = lambda x: fbias(k,x)
-        #pE = numpy.dot(w_kn[:,k],fx+bias(x_n)) #We don't actually need the bias part, it doesn't change with lambda
-        pE = numpy.dot(w_kn[:,k],fx)
-        expf = numpy.exp(-splev(intvals,tck)-bias(intvals))
+        expf = numpy.exp(-spvals-bias(intvals))
         pF = numpy.log(romb(expf,1.0/(nrom-1)))
-        kl += (pE + pF)
+        kl += pF
     if verbose:
         print kl,t
     return kl
@@ -245,42 +241,49 @@ def vFEP(t,ft,x_kn,K,N_k):
 
 # set minimizer options to display. Apprently does not exist for BFGS. Probably don't need to set eps.
 options = {'disp':True, 'eps':10**(-4), 'gtol':10**(-3)}
-if method == 'sumkldiverge':
+nplot = 1000
+x = numpy.linspace(chi_min,chi_max,nplot)
 
-    w_kn = numpy.exp(mbar.Log_W_nk) # normalized weights 
+print "using the total of KL divergences"
+# inputs to skldivergence to minimize are:
+# the trial function we are computing the kl divergences for.
+# the weights at the samples
 
-    # inputs to kldivergence in minimize are:
-    # the function that we are computing the kldivergence of
-    # the x values we have samples at
-    # the number of umbrellas
-    # the weights at the samples
-    # the umbrella restraints strengths
-    # the umbrella restraints centers
-    # the domain of the function  
+# Compute unnormalized log weights for the given reduced potential u_kn.
+log_w_n = mbar._computeUnnormalizedLogWeights(pymbar.utils.kn_to_n(u_kn, N_k = mbar.N_k))
+w_n = numpy.exp(log_w_n)
+w_n = w_n/numpy.sum(w_n)
+result = minimize(kl,tstart,args=(trialf,chi_n,w_n),options=options)
+pmf = lambda x: splev(x,trialf(result.x))
+pmf_plot_kl = pmf(x)
+pmf_bins_kl = pmf(bin_center_i)
 
-    result = minimize(sumkldiverge,tstart,args=(trialf,chi_n,K,w_kn),options=options)
-    pmf_final = lambda x: splev(x,trialf(result.x))
+# sumkldiverge
+print "using the sum of KL divergences over all states"
+w_kn = numpy.exp(mbar.Log_W_nk) # normalized weights 
+
+# inputs to sum of kldivergence to minimize are:
+# the trial function we are computing the sum of kl divergences for.
+# the x values we have samples at
+# the number of umbrellas
+# the weights at the samples
+
+result = minimize(sumkl,tstart,args=(trialf,chi_n,K,w_kn),options=options)
+pmf = lambda x: splev(x,trialf(result.x))
+pmf_plot_sumkl = pmf(x)
+pmf_bins_sumkl = pmf(bin_center_i)
     
-elif method == 'kldiverge':
+print "usng variational fep"
+# inputs to vFEP to minimize are:
+# the trial function we are computing the kl divergences for.
+# the array of samples at each state
+# the number of states
+# the number of samples at each state.
 
-    # inputs to minimize are:
-    # the function that we are to minimize
-    # the x values we have samples at
-    # the weights at the samples
-    # the domain of the function
-
-    # Compute unnormalized log weights for the given reduced potential u_kn.
-    log_w_n = mbar._computeUnnormalizedLogWeights(pymbar.utils.kn_to_n(u_kn, N_k = mbar.N_k))
-    w_n = numpy.exp(log_w_n)
-    w_n = w_n/numpy.sum(w_n)
-
-    result = minimize(kldiverge,tstart,args=(trialf,chi_n,w_n),options=options)
-    pmf_final = lambda x: splev(x,trialf(result.x))
-
-elif method == 'vFEP':
-
-    result = minimize(vFEP,tstart,args=(trialf,chi_kn,K,mbar.N_k),options=options)
-    pmf_final = lambda x: splev(x,trialf(result.x))
+result = minimize(vFEP,tstart,args=(trialf,chi_kn,K,mbar.N_k),options=options)
+pmf = lambda x: splev(x,trialf(result.x))
+pmf_plot_vfep = pmf(x)
+pmf_bins_vfep = pmf(bin_center_i)
 
 #pr.disable()
 #s = StringIO.StringIO()
@@ -289,19 +292,30 @@ elif method == 'vFEP':
 #ps.print_stats()
 #print s.getvalue()
 
-nplot = 1000
 import matplotlib.pyplot as plt
-x = numpy.linspace(chi_min,chi_max,nplot)
-plt.plot(bin_center_i,f_i,'rx')
-yout = pmf_final(x)
-ymin = numpy.min(yout)
-yout -= ymin
-# Write out PMF
-print "PMF (in units of kT)"
-print "%8s %8s %8s" % ('bin', 'f', 'df')
-for i in range(nbins):
-    print "%8.1f %8.3f" % (bin_center_i[i], pmf_final(bin_center_i[i])-ymin)
-plt.plot(x,yout,'k-')
+plt.plot(bin_center_i,f_i,'ro')
+
+names = ["Sum of KL divergence", "KL divergence", "vFEP"]
+pmf_plot = [pmf_plot_kl,pmf_plot_sumkl,pmf_plot_vfep]
+pmf_bins = [pmf_bins_kl,pmf_bins_sumkl,pmf_bins_vfep]
+strings = ['k-','b-','g-']
+
+for n in range(3):
+
+    ymin = numpy.min(pmf_plot[n])
+    pmf_plot[n] -= ymin
+
+    ymin = numpy.min(pmf_bins[n])
+    pmf_bins[n] -= ymin
+
+    # Write out PMF
+    print "PMF from %s (in units of kT)" % names[n]
+    print "%8s %8s %8s" % ('bin', 'f', 'df')
+    for i in range(nbins):
+        print "%8.1f %8.3f" % (bin_center_i[i], pmf_bins[n][i])
+    plt.plot(x,pmf_plot[n],strings[n])
+
 plt.xlim([chi_min,chi_max])
+plt.legend(['Top Hat'] + names,loc=1,prop={'size':12}) 
 plt.show()
 

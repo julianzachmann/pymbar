@@ -166,7 +166,7 @@ import pdb
 #pr.enable()
 
 smoother = 'spline'
-nspline = 100
+nspline = 14
 nrom = 2**(numpy.ceil(numpy.log(nspline)/numpy.log(2))+2)+1  # at least 4 per spline
 intvals = numpy.linspace(chi_min,chi_max,nrom)
 
